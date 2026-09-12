@@ -382,6 +382,10 @@
     font-family:'Barlow Condensed',sans-serif;
     font-weight:800; font-size:26px;
   }
+  .runner-ups{
+    font-size:11px; color:var(--muted); text-align:center;
+    margin:-10px 0 16px; line-height:1.4;
+  }
 
   .lb-row{
     display:flex; align-items:center; gap:10px;
@@ -911,6 +915,16 @@ function topVoteGetters(bucket){
   const max = Math.max(...entries.map(([,v])=>v));
   return entries.filter(([,v])=>v===max).map(([id])=>id);
 }
+function voteRankings(bucket){
+  const byVotes = {};
+  Object.entries(bucket).filter(([,v])=>v>0).forEach(([pid,v])=>{
+    if(!byVotes[v]) byVotes[v] = [];
+    byVotes[v].push(pid);
+  });
+  return Object.entries(byVotes)
+    .map(([votes,ids])=>({ votes: parseFloat(votes), ids }))
+    .sort((a,b)=> b.votes - a.votes);
+}
 function playerName(id){
   const p = state.roster.find(p=>p.id===id);
   return p ? p.name : 'Unknown player';
@@ -1210,15 +1224,25 @@ function renderVoteTab(m){
     const dodNames = (m.dodWinners||[]).map(playerName).join(' & ') || '—';
     const totalMom = Object.values(m.votes.mom).reduce((a,b)=>a+b,0);
     const totalDod = Object.values(m.votes.dod).reduce((a,b)=>a+b,0);
+    const momRunners = voteRankings(m.votes.mom).slice(1,3);
+    const dodRunners = voteRankings(m.votes.dod).slice(1,3);
+    const runnerUpLine = (ranks)=>{
+      if(ranks.length===0) return '';
+      const labels = ['2nd','3rd'];
+      const parts = ranks.map((r,i)=> `${labels[i]}: ${r.ids.map(playerName).join(' & ')} (${formatVotes(r.votes)})`);
+      return `<div class="runner-ups">${parts.join(' · ')}</div>`;
+    };
     return `
       <div class="winner-banner">
         <div class="kicker">Man of the Match</div>
         <div class="name">${escapeHtml(momNames)}</div>
       </div>
+      ${runnerUpLine(momRunners)}
       <div class="winner-banner" style="border-color:var(--muted);">
         <div class="kicker" style="color:var(--muted)">Dick of the Day</div>
         <div class="name">${escapeHtml(dodNames)}</div>
       </div>
+      ${runnerUpLine(dodRunners)}
       <div class="totals-strip">
         <div class="box"><div class="n">${formatVotes(totalMom)}</div><div class="l">MOM votes cast</div></div>
         <div class="box"><div class="n">${formatVotes(totalDod)}</div><div class="l">DOD votes cast</div></div>
