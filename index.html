@@ -962,7 +962,9 @@ function seasonAggregate(){
   };
   let totalMomVotes = 0, totalDodVotes = 0, matchesPlayed = 0, matchesFinalized = 0;
   Object.values(state.matches).forEach(m=>{
-    if(m.lineup.length) matchesPlayed++;
+    if(!m.finalized) return; // don't count a fixture until MOM/DOD has been finalized
+    matchesPlayed++;
+    matchesFinalized++;
     m.lineup.forEach(pid=>{
       const s = m.stats[pid] || blankStats();
       const a = ensure(pid);
@@ -972,11 +974,8 @@ function seasonAggregate(){
     });
     Object.entries(m.votes.mom||{}).forEach(([pid,v])=>{ totalMomVotes+=v; ensure(pid).momVotes+=v; });
     Object.entries(m.votes.dod||{}).forEach(([pid,v])=>{ totalDodVotes+=v; ensure(pid).dodVotes+=v; });
-    if(m.finalized){
-      matchesFinalized++;
-      (m.momWinners||[]).forEach(pid=>ensure(pid).momWins++);
-      (m.dodWinners||[]).forEach(pid=>ensure(pid).dodWins++);
-    }
+    (m.momWinners||[]).forEach(pid=>ensure(pid).momWins++);
+    (m.dodWinners||[]).forEach(pid=>ensure(pid).dodWins++);
   });
   return { per, totalMomVotes, totalDodVotes, matchesPlayed, matchesFinalized };
 }
@@ -1340,13 +1339,13 @@ function renderSeasonStats(){
   const teamFG = rows.reduce((sum,r)=>sum+r[1].fg,0);
   const teamPC = rows.reduce((sum,r)=>sum+r[1].pc,0);
   const teamPF = rows.reduce((sum,r)=>sum+r[1].pf,0);
-  const against = Object.values(state.matches).reduce((a,m)=>{
+  const against = Object.values(state.matches).filter(m=>m.finalized).reduce((a,m)=>{
     const o = m.opposition || blankStats();
     a.fg += o.fg||0; a.pc += o.pc||0; a.pf += o.pf||0;
     return a;
   }, {fg:0,pc:0,pf:0});
   const againstTotal = against.fg+against.pc+against.pf;
-  const record = Object.values(state.matches).filter(m=>m.lineup.length>0).reduce((rec,m)=>{
+  const record = Object.values(state.matches).filter(m=>m.finalized).reduce((rec,m)=>{
     const r = matchResult(m);
     if(r==='W') rec.w++; else if(r==='L') rec.l++; else rec.d++;
     return rec;
