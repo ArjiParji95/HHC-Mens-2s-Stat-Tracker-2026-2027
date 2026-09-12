@@ -869,6 +869,21 @@ function createMatch(opponent, date, homeAway){
   persist();
   openMatch(id, 'lineup');
 }
+function deleteMatch(id){
+  const m = state.matches[id];
+  const opponent = m ? m.opponent : 'this fixture';
+  openModal({
+    title:'Delete fixture?',
+    message:`This permanently deletes the fixture vs ${opponent}, along with its lineup, stats, fines and votes. This can't be undone.`,
+    showInput:false, confirmLabel:'Delete fixture',
+    onConfirm:()=>{
+      delete state.matches[id];
+      persist();
+      go('matches');
+      showToast('Fixture deleted');
+    }
+  });
+}
 function toggleLineup(matchId, playerId){
   const m = state.matches[matchId];
   const i = m.lineup.indexOf(playerId);
@@ -1001,7 +1016,7 @@ function render(){
     </div>
     <main>${renderScreen()}</main>
     <div class="tabbar">
-      ${tabBtn('matches','⛳','Matches')}
+      ${tabBtn('matches','🏑','Matches')}
       ${tabBtn('squad','👥','Squad')}
       ${tabBtn('fines','💷','Fines')}
       ${tabBtn('stats','📊','Season')}
@@ -1131,6 +1146,7 @@ function renderMatchDetail(matchId){
       <button class="back-btn" data-nav="matches">←</button>
       <div class="title">vs ${escapeHtml(m.opponent)}</div>
       ${hasScore?`<span class="pill ${resultClass(matchResult(m))}">${us}-${them} ${matchResult(m)}</span>`:''}
+      ${canEdit() ? `<button class="back-btn" style="color:var(--red-card);" data-delete-match="${m.id}" title="Delete fixture">🗑</button>` : ''}
     </div>
     <div class="subtabs">
       <button data-subtab="lineup" class="${nav.matchSubtab==='lineup'?'active':''}">Lineup</button>
@@ -1528,6 +1544,9 @@ function bindEvents(){
     const venue = document.getElementById('new-venue').value;
     if(!opp.trim()){ showToast('Add an opponent name'); return; }
     createMatch(opp, date, venue);
+  });
+  document.querySelectorAll('[data-delete-match]').forEach(el=>{
+    el.addEventListener('click', ()=> deleteMatch(el.getAttribute('data-delete-match')));
   });
 
   const youthDraft = document.getElementById('new-player-youth');
