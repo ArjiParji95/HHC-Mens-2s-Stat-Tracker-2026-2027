@@ -361,6 +361,7 @@
     width:24px; height:24px; border-radius:6px; border:none;
     background:var(--line); color:var(--chalk); font-size:15px; cursor:pointer;
   }
+  .vote-counter button:disabled{opacity:0.35; cursor:default;}
   .vote-counter .n{
     font-family:'Barlow Condensed',sans-serif;
     font-weight:700; font-size:16px; min-width:18px; text-align:center;
@@ -567,7 +568,7 @@ let sb = null;
 let session = null; // { email, role: 'editor' | 'viewer' }
 let loginError = '';
 let loaded = false;
-let state = { roster: [], matches: {}, fines: {}, finesPaid: {} };
+let state = { roster: [], matches: {}, legacyFines: {}, finesPaid: {} };
 
 function canEdit(){ return !!(session && session.role === 'editor'); }
 
@@ -614,7 +615,7 @@ async function doLogin(email, password){
 async function doLogout(){
   if(sb) await sb.auth.signOut();
   session = null;
-  state = { roster: [], matches: {}, fines: {}, finesPaid: {} };
+  state = { roster: [], matches: {}, legacyFines: {}, finesPaid: {} };
   render();
 }
 
@@ -625,9 +626,19 @@ async function loadTeamData(){
       state = data.data;
       if(!state.roster) state.roster = [];
       if(!state.matches) state.matches = {};
-      if(!state.fines) state.fines = {};
       if(!state.finesPaid) state.finesPaid = {};
-      Object.values(state.matches).forEach(m=>{ if(!m.opposition) m.opposition = blankStats(); });
+      // one-time migration: fines used to be a single running tally,
+      // now they're logged per fixture. Old counts are kept as a
+      // legacy carry-in so nothing already tallied gets lost.
+      if(state.fines && !state.legacyFines){
+        state.legacyFines = state.fines;
+      }
+      if(!state.legacyFines) state.legacyFines = {};
+      delete state.fines;
+      Object.values(state.matches).forEach(m=>{
+        if(!m.opposition) m.opposition = blankStats();
+        if(!m.fines) m.fines = {};
+      });
 
       // clean up any orphaned player references left over from removals
       // made before player-removal properly cleared match data
@@ -637,7 +648,7 @@ async function loadTeamData(){
         const beforeLen = m.lineup.length;
         m.lineup = m.lineup.filter(pid=>rosterIds.has(pid));
         if(m.lineup.length !== beforeLen) cleaned = true;
-        [m.stats, m.votes.mom, m.votes.dod].forEach(bucket=>{
+        [m.stats, m.votes.mom, m.votes.dod, m.fines].forEach(bucket=>{
           Object.keys(bucket).forEach(pid=>{
             if(!rosterIds.has(pid)){ delete bucket[pid]; cleaned = true; }
           });
@@ -650,9 +661,12 @@ async function loadTeamData(){
           }
         });
       });
+      Object.keys(state.legacyFines).forEach(pid=>{
+        if(!rosterIds.has(pid)){ delete state.legacyFines[pid]; cleaned = true; }
+      });
       if(cleaned && canEdit()) saveState();
     } else {
-      state = { roster: [], matches: {}, fines: {}, finesPaid: {} };
+      state = { roster: [], matches: {}, legacyFines: {}, finesPaid: {} };
     }
   }catch(e){
     showToast('Could not load team data');
@@ -707,7 +721,7 @@ async function shareStats(){
 function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
 
 /* ---------- nav state ---------- */
-let nav = { tab:'matches', matchId:null, matchSubtab:'lineup' };
+let nav = { tab:'matches', matchId:null, matchSubtab:'lineup', finesMatchId:null };
 let modalConfig = null;
 
 function openModal(config){ modalConfig = config; render(); }
@@ -751,7 +765,7 @@ function bindModalEvents(){
   if(input) input.addEventListener('keydown', e=>{ if(e.key==='Enter') confirmBtn && confirmBtn.click(); });
 }
 
-function go(tab){ nav = { tab, matchId:null, matchSubtab:'lineup' }; render(); }
+function go(tab){ nav = { tab, matchId:null, matchSubtab:'lineup', finesMatchId:null }; render(); }
 function openMatch(id, subtab){ nav = { tab:'matches', matchId:id, matchSubtab: subtab||'lineup' }; render(); }
 
 /* ---------- squad ---------- */
@@ -767,18 +781,19 @@ function removePlayer(id){
   const name = p ? p.name : 'this player';
   openModal({
     title:'Remove player?',
-    message:`This removes ${name} from the squad and clears them from every match's lineup, stats and votes. Past totals they contributed will no longer be counted. This can't be undone.`,
+    message:`This removes ${name} from the squad and clears them from every match's lineup, stats, votes and fines. Past totals they contributed will no longer be counted. This can't be undone.`,
     showInput:false, confirmLabel:'Remove player',
     onConfirm:()=>{
       state.roster = state.roster.filter(p=>p.id!==id);
-      delete state.fines[id];
       delete state.finesPaid[id];
+      if(state.legacyFines) delete state.legacyFines[id];
       Object.values(state.matches).forEach(m=>{
         const i = m.lineup.indexOf(id);
         if(i>=0) m.lineup.splice(i,1);
         delete m.stats[id];
         delete m.votes.mom[id];
         delete m.votes.dod[id];
+        if(m.fines) delete m.fines[id];
         if((m.momWinners||[]).includes(id)) m.momWinners = m.momWinners.filter(w=>w!==id);
         if((m.dodWinners||[]).includes(id)) m.dodWinners = m.dodWinners.filter(w=>w!==id);
       });
@@ -794,23 +809,32 @@ function toggleYouth(id){
 
 /* ---------- fines ---------- */
 const FINE_RATE = 0.50;
-function bumpFine(playerId, delta){
-  state.fines[playerId] = Math.max(0, (state.fines[playerId]||0) + delta);
+const FINE_CAP_PER_MATCH = 8;
+function bumpFixtureFine(matchId, playerId, delta){
+  const m = state.matches[matchId];
+  if(!m.fines) m.fines = {};
+  const next = Math.max(0, Math.min(FINE_CAP_PER_MATCH, (m.fines[playerId]||0) + delta));
+  m.fines[playerId] = next;
   persist();
 }
 function fineRateFor(player){
   return player && player.youth ? FINE_RATE/2 : FINE_RATE;
 }
-function fineAmountFor(playerId){
+function totalFineCount(playerId){
+  let count = state.legacyFines ? (state.legacyFines[playerId]||0) : 0;
+  Object.values(state.matches).forEach(m=>{ count += (m.fines && m.fines[playerId]) || 0; });
+  return count;
+}
+function owedFor(playerId){
   const p = state.roster.find(p=>p.id===playerId);
-  const count = state.fines[playerId]||0;
-  return count * fineRateFor(p);
+  const earned = totalFineCount(playerId) * fineRateFor(p);
+  return Math.max(0, earned - paidAmountFor(playerId));
 }
 function paidAmountFor(playerId){
   return state.finesPaid[playerId] || 0;
 }
 function markFinePaid(playerId){
-  const amount = fineAmountFor(playerId);
+  const amount = owedFor(playerId);
   if(amount <= 0){ showToast('Nothing outstanding for this player'); return; }
   const p = state.roster.find(p=>p.id===playerId);
   openModal({
@@ -819,7 +843,6 @@ function markFinePaid(playerId){
     showInput:false, confirmLabel:'Mark paid',
     onConfirm:()=>{
       state.finesPaid[playerId] = (state.finesPaid[playerId]||0) + amount;
-      state.fines[playerId] = 0;
       persist();
       showToast('Marked as paid');
     }
@@ -827,7 +850,7 @@ function markFinePaid(playerId){
 }
 function money(n){ return '£' + n.toFixed(2); }
 function totalFinesPot(){
-  return state.roster.reduce((sum,p)=> sum + fineAmountFor(p.id), 0);
+  return state.roster.reduce((sum,p)=> sum + owedFor(p.id), 0);
 }
 function totalFinesPaid(){
   return state.roster.reduce((sum,p)=> sum + paidAmountFor(p.id), 0);
@@ -840,7 +863,7 @@ function createMatch(opponent, date, homeAway){
   const id = uid();
   state.matches[id] = {
     id, opponent: opponent.trim() || 'Opponent', date, homeAway,
-    lineup: [], stats: {}, opposition: blankStats(), votes:{ mom:{}, dod:{} },
+    lineup: [], stats: {}, opposition: blankStats(), votes:{ mom:{}, dod:{} }, fines:{},
     finalized:false, momWinners:[], dodWinners:[]
   };
   persist();
@@ -1387,19 +1410,34 @@ function renderSeasonStats(){
 }
 
 function renderFines(){
+  if(nav.finesMatchId) return renderFixtureFines(nav.finesMatchId);
+  return renderFinesHome();
+}
+
+function renderFinesHome(){
   if(state.roster.length===0){
     return `<div class="empty"><div class="big">Squad is empty</div>${canEdit() ? 'Add players in the Squad tab first, then tally fines here.' : 'No players have been added yet.'}</div>`;
   }
+
+  const matches = Object.values(state.matches).sort((a,b)=> (b.date||'').localeCompare(a.date||''));
+  const fixtureList = matches.length ? matches.map(m=>{
+    const count = Object.values(m.fines||{}).reduce((a,b)=>a+b,0);
+    return `
+      <div class="card fixture-card" data-open-fines="${m.id}">
+        <div class="meta">
+          <div class="opponent">vs ${escapeHtml(m.opponent)}</div>
+          <div class="date-row"><span>${fmtDate(m.date)}</span></div>
+        </div>
+        <span class="pill">${count} fine${count===1?'':'s'}</span>
+        <span class="chev">›</span>
+      </div>
+    `;
+  }).join('') : `<div class="empty" style="padding:20px 16px"><div class="big">No fixtures yet</div>Add a match in the Matches tab first, then log fines against it here.</div>`;
+
   const rows = state.roster.map(p=>{
-    const count = state.fines[p.id]||0;
-    const amount = fineAmountFor(p.id);
+    const count = totalFineCount(p.id);
+    const amount = owedFor(p.id);
     const paid = paidAmountFor(p.id);
-    const counter = canEdit() ? `
-      <div class="vote-counter">
-        <button data-fine-minus="${p.id}">−</button>
-        <div class="n">${count}</div>
-        <button data-fine-plus="${p.id}">+</button>
-      </div>` : '';
     const actions = canEdit() ? `
       <div class="fine-row-actions">
         <button class="btn ghost" style="padding:5px 12px; font-size:12px;" data-mark-paid="${p.id}" ${amount<=0?'disabled':''}>Mark paid</button>
@@ -1411,18 +1449,59 @@ function renderFines(){
             <div class="name">${escapeHtml(p.name)}${p.youth?'<span class="youth-badge">Youth</span>':''}</div>
             <div class="amount">${count} fine${count===1?'':'s'} · ${money(amount)} owed${p.youth?' (half rate)':''}${paid>0?` · ${money(paid)} paid to date`:''}</div>
           </div>
-          ${counter}
         </div>
         ${actions}
       </div>
     `;
   }).join('');
+
   return `
     <div class="totals-strip">
       <div class="box"><div class="n">${money(totalFinesPot())}</div><div class="l">Owed now</div></div>
       <div class="box"><div class="n">${money(totalFinesPaid())}</div><div class="l">Paid this season</div></div>
     </div>
-    <div class="swap-note">50p a fine, standard rate. Youth players are automatically charged half — that's reflected here and in every total.${canEdit() ? " Marking a fine as paid clears it from the pot and logs it against the player's name." : ''}</div>
+
+    <div class="section-title">By fixture</div>
+    <div class="swap-note">Tap a fixture to log fines against it — the whole squad is listed there, not just who played.</div>
+    ${fixtureList}
+
+    <div class="section-title">Whole squad</div>
+    <div class="swap-note">50p a fine, standard rate. Youth players are automatically charged half — that's reflected here and in every total.${canEdit() ? " Marking as paid clears what's currently owed and logs it against the player's name." : ''}</div>
+    <div class="card">${rows}</div>
+  `;
+}
+
+function renderFixtureFines(matchId){
+  const m = state.matches[matchId];
+  if(!m){ nav.finesMatchId = null; return renderFinesHome(); }
+  if(!m.fines) m.fines = {};
+  const rows = state.roster.map(p=>{
+    const count = m.fines[p.id]||0;
+    const amount = count * fineRateFor(p);
+    const counter = canEdit() ? `
+      <div class="vote-counter">
+        <button data-fixture-fine-minus="${p.id}" data-match="${m.id}">−</button>
+        <div class="n">${count}</div>
+        <button data-fixture-fine-plus="${p.id}" data-match="${m.id}" ${count>=FINE_CAP_PER_MATCH?'disabled':''}>+</button>
+      </div>` : `<div class="vote-counter"><div class="n">${count}</div></div>`;
+    return `
+      <div class="fine-row">
+        <div class="fine-row-top">
+          <div class="spacer">
+            <div class="name">${escapeHtml(p.name)}${p.youth?'<span class="youth-badge">Youth</span>':''}</div>
+            <div class="amount">${money(amount)}${p.youth?' (half rate)':''}</div>
+          </div>
+          ${counter}
+        </div>
+      </div>
+    `;
+  }).join('');
+  return `
+    <div class="back-row">
+      <button class="back-btn" data-fines-back>←</button>
+      <div class="title">vs ${escapeHtml(m.opponent)} — fines</div>
+    </div>
+    <div class="swap-note">${canEdit() ? `Whole squad, not just the lineup — up to ${FINE_CAP_PER_MATCH} fines per player for this fixture.` : "This fixture's fines."}</div>
     <div class="card">${rows}</div>
   `;
 }
@@ -1472,11 +1551,17 @@ function bindEvents(){
   document.querySelectorAll('[data-toggle-youth]').forEach(el=>{
     el.addEventListener('click', ()=> toggleYouth(el.getAttribute('data-toggle-youth')));
   });
-  document.querySelectorAll('[data-fine-plus]').forEach(el=>{
-    el.addEventListener('click', ()=> bumpFine(el.getAttribute('data-fine-plus'), 1));
+  document.querySelectorAll('[data-open-fines]').forEach(el=>{
+    el.addEventListener('click', ()=>{ nav.finesMatchId = el.getAttribute('data-open-fines'); render(); });
   });
-  document.querySelectorAll('[data-fine-minus]').forEach(el=>{
-    el.addEventListener('click', ()=> bumpFine(el.getAttribute('data-fine-minus'), -1));
+  document.querySelectorAll('[data-fines-back]').forEach(el=>{
+    el.addEventListener('click', ()=>{ nav.finesMatchId = null; render(); });
+  });
+  document.querySelectorAll('[data-fixture-fine-plus]').forEach(el=>{
+    el.addEventListener('click', ()=> bumpFixtureFine(el.getAttribute('data-match'), el.getAttribute('data-fixture-fine-plus'), 1));
+  });
+  document.querySelectorAll('[data-fixture-fine-minus]').forEach(el=>{
+    el.addEventListener('click', ()=> bumpFixtureFine(el.getAttribute('data-match'), el.getAttribute('data-fixture-fine-minus'), -1));
   });
   document.querySelectorAll('[data-mark-paid]').forEach(el=>{
     el.addEventListener('click', ()=> markFinePaid(el.getAttribute('data-mark-paid')));
