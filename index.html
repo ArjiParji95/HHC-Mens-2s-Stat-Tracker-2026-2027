@@ -196,6 +196,18 @@
     border-bottom:1px solid var(--line);
   }
   .player-row:last-child{border-bottom:none;}
+  .squad-player-row{
+    padding:11px 4px;
+    border-bottom:1px solid var(--line);
+  }
+  .squad-player-row:last-child{border-bottom:none;}
+  .squad-player-row .row-top{
+    display:flex; align-items:center; gap:10px;
+  }
+  .squad-player-row .row-chips{
+    display:flex; gap:6px; flex-wrap:wrap;
+    margin-top:8px; padding-left:38px;
+  }
   .player-num{
     width:28px; height:28px; border-radius:50%;
     background:var(--surface-raised);
@@ -769,10 +781,10 @@ function go(tab){ nav = { tab, matchId:null, matchSubtab:'lineup', finesMatchId:
 function openMatch(id, subtab){ nav = { tab:'matches', matchId:id, matchSubtab: subtab||'lineup' }; render(); }
 
 /* ---------- squad ---------- */
-function addPlayer(name, number, youth){
+function addPlayer(name, number, youth, captain, viceCaptain){
   name = (name||'').trim();
   if(!name) return;
-  state.roster.push({ id: uid(), name, number: (number||'').trim(), youth: !!youth });
+  state.roster.push({ id: uid(), name, number: (number||'').trim(), youth: !!youth, captain: !!captain, viceCaptain: !!viceCaptain });
   state.roster.sort((a,b)=> (parseInt(a.number)||999) - (parseInt(b.number)||999) || a.name.localeCompare(b.name));
   persist();
 }
@@ -806,6 +818,14 @@ function toggleYouth(id){
   const p = state.roster.find(p=>p.id===id);
   if(p){ p.youth = !p.youth; persist(); }
 }
+function toggleCaptain(id){
+  const p = state.roster.find(p=>p.id===id);
+  if(p){ p.captain = !p.captain; persist(); }
+}
+function toggleViceCaptain(id){
+  const p = state.roster.find(p=>p.id===id);
+  if(p){ p.viceCaptain = !p.viceCaptain; persist(); }
+}
 
 /* ---------- fines ---------- */
 const FINE_RATE = 0.50;
@@ -818,7 +838,17 @@ function bumpFixtureFine(matchId, playerId, delta){
   persist();
 }
 function fineRateFor(player){
-  return player && player.youth ? FINE_RATE/2 : FINE_RATE;
+  let rate = FINE_RATE;
+  if(player && player.youth) rate *= 0.5;
+  if(player && (player.captain || player.viceCaptain)) rate *= 2;
+  return rate;
+}
+function rateLabel(player){
+  if(!player) return '';
+  const mult = fineRateFor(player) / FINE_RATE;
+  if(mult < 1) return ' (half rate)';
+  if(mult > 1) return ' (double rate)';
+  return '';
 }
 function totalFineCount(playerId){
   let count = state.legacyFines ? (state.legacyFines[playerId]||0) : 0;
@@ -1315,11 +1345,18 @@ function renderVoteTab(m){
 
 function renderSquad(){
   const rows = state.roster.map(p=>`
-    <div class="player-row">
-      <div class="player-num">${escapeHtml(p.number||'–')}</div>
-      <div class="player-name">${escapeHtml(p.name)}${p.youth?'<span class="youth-badge">Youth</span>':''}</div>
-      ${canEdit() ? `<div class="toggle-chip ${p.youth?'on':''}" data-toggle-youth="${p.id}">Youth</div>` : ''}
-      ${canEdit() ? `<button class="btn danger" style="padding:5px 10px;font-size:12px;" data-remove-player="${p.id}">Remove</button>` : ''}
+    <div class="squad-player-row">
+      <div class="row-top">
+        <div class="player-num">${escapeHtml(p.number||'–')}</div>
+        <div class="player-name">${escapeHtml(p.name)}${p.youth?'<span class="youth-badge">Youth</span>':''}${p.captain?'<span class="youth-badge">Captain</span>':''}${p.viceCaptain?'<span class="youth-badge">Vice Captain</span>':''}</div>
+        ${canEdit() ? `<button class="btn danger" style="padding:5px 10px;font-size:12px;" data-remove-player="${p.id}">Remove</button>` : ''}
+      </div>
+      ${canEdit() ? `
+      <div class="row-chips">
+        <div class="toggle-chip ${p.youth?'on':''}" data-toggle-youth="${p.id}">Youth</div>
+        <div class="toggle-chip ${p.captain?'on':''}" data-toggle-captain="${p.id}">Captain</div>
+        <div class="toggle-chip ${p.viceCaptain?'on':''}" data-toggle-vc="${p.id}">Vice Captain</div>
+      </div>` : ''}
     </div>
   `).join('');
   const list = state.roster.length ? `<div class="card">${rows}</div>` : `<div class="empty"><div class="big">Squad is empty</div>${canEdit() ? "Add players below — you'll pick from this list each week." : 'No players have been added yet.'}</div>`;
@@ -1332,7 +1369,11 @@ function renderSquad(){
         <div style="flex:2"><label>Player name</label><input type="text" id="new-player-name" placeholder="e.g. Sam Fisher"></div>
         <div style="flex:1"><label>Squad no.</label><input type="text" id="new-player-num" placeholder="9" inputmode="numeric"></div>
       </div>
-      <div class="toggle-chip" id="new-player-youth" data-youth-draft="0" style="display:inline-block;margin-bottom:14px;">Youth player</div>
+      <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:14px;">
+        <div class="toggle-chip" id="new-player-youth" data-youth-draft="0">Youth player</div>
+        <div class="toggle-chip" id="new-player-captain" data-captain-draft="0">Captain</div>
+        <div class="toggle-chip" id="new-player-vc" data-vc-draft="0">Vice Captain</div>
+      </div>
       <button class="btn block" id="add-player-btn">Add player</button>
     </div>` : ''}
     <div class="section-title">Account</div>
@@ -1462,7 +1503,7 @@ function renderFinesHome(){
         <div class="fine-row-top">
           <div class="spacer">
             <div class="name">${escapeHtml(p.name)}${p.youth?'<span class="youth-badge">Youth</span>':''}</div>
-            <div class="amount">${count} fine${count===1?'':'s'} · ${money(amount)} owed${p.youth?' (half rate)':''}${paid>0?` · ${money(paid)} paid to date`:''}</div>
+            <div class="amount">${count} fine${count===1?'':'s'} · ${money(amount)} owed${rateLabel(p)}${paid>0?` · ${money(paid)} paid to date`:''}</div>
           </div>
         </div>
         ${actions}
@@ -1481,7 +1522,7 @@ function renderFinesHome(){
     ${fixtureList}
 
     <div class="section-title">Whole squad</div>
-    <div class="swap-note">50p a fine, standard rate. Youth players are automatically charged half — that's reflected here and in every total.${canEdit() ? " Marking as paid clears what's currently owed and logs it against the player's name." : ''}</div>
+    <div class="swap-note">50p a fine, standard rate. Youth players are automatically charged half, and the Captain and Vice Captain are charged double — that's reflected here and in every total.${canEdit() ? " Marking as paid clears what's currently owed and logs it against the player's name." : ''}</div>
     <div class="card">${rows}</div>
   `;
 }
@@ -1504,7 +1545,7 @@ function renderFixtureFines(matchId){
         <div class="fine-row-top">
           <div class="spacer">
             <div class="name">${escapeHtml(p.name)}${p.youth?'<span class="youth-badge">Youth</span>':''}</div>
-            <div class="amount">${money(amount)}${p.youth?' (half rate)':''}</div>
+            <div class="amount">${money(amount)}${rateLabel(p)}</div>
           </div>
           ${counter}
         </div>
@@ -1555,19 +1596,39 @@ function bindEvents(){
     youthDraft.setAttribute('data-youth-draft', on ? '0':'1');
     youthDraft.classList.toggle('on', !on);
   });
+  const captainDraft = document.getElementById('new-player-captain');
+  if(captainDraft) captainDraft.addEventListener('click', ()=>{
+    const on = captainDraft.getAttribute('data-captain-draft')==='1';
+    captainDraft.setAttribute('data-captain-draft', on ? '0':'1');
+    captainDraft.classList.toggle('on', !on);
+  });
+  const vcDraft = document.getElementById('new-player-vc');
+  if(vcDraft) vcDraft.addEventListener('click', ()=>{
+    const on = vcDraft.getAttribute('data-vc-draft')==='1';
+    vcDraft.setAttribute('data-vc-draft', on ? '0':'1');
+    vcDraft.classList.toggle('on', !on);
+  });
   const addPlayerBtn = document.getElementById('add-player-btn');
   if(addPlayerBtn) addPlayerBtn.addEventListener('click', ()=>{
     const name = document.getElementById('new-player-name').value;
     const num = document.getElementById('new-player-num').value;
     const youth = document.getElementById('new-player-youth').getAttribute('data-youth-draft')==='1';
+    const captain = document.getElementById('new-player-captain').getAttribute('data-captain-draft')==='1';
+    const vc = document.getElementById('new-player-vc').getAttribute('data-vc-draft')==='1';
     if(!name.trim()){ showToast('Enter a player name'); return; }
-    addPlayer(name, num, youth);
+    addPlayer(name, num, youth, captain, vc);
   });
   document.querySelectorAll('[data-remove-player]').forEach(el=>{
     el.addEventListener('click', ()=> removePlayer(el.getAttribute('data-remove-player')));
   });
   document.querySelectorAll('[data-toggle-youth]').forEach(el=>{
     el.addEventListener('click', ()=> toggleYouth(el.getAttribute('data-toggle-youth')));
+  });
+  document.querySelectorAll('[data-toggle-captain]').forEach(el=>{
+    el.addEventListener('click', ()=> toggleCaptain(el.getAttribute('data-toggle-captain')));
+  });
+  document.querySelectorAll('[data-toggle-vc]').forEach(el=>{
+    el.addEventListener('click', ()=> toggleViceCaptain(el.getAttribute('data-toggle-vc')));
   });
   document.querySelectorAll('[data-open-fines]').forEach(el=>{
     el.addEventListener('click', ()=>{ nav.finesMatchId = el.getAttribute('data-open-fines'); render(); });
